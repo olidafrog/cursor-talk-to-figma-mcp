@@ -243,6 +243,10 @@ async function handleCommand(command, params) {
       return await setVariableValue(params);
     case "list_collections":
       return await listCollections();
+    case "create_collection":
+      return await createCollection(params);
+    case "rename_node":
+      return await renameNode(params);
     case "set_node_paints":
       return await setNodePaints(params);
     case "get_node_paints":
@@ -1445,6 +1449,54 @@ async function listCollections(params) {
     key: c.key,
     description: c.description
   }));
+}
+
+/**
+ * Creates a new variable collection in the Figma document.
+ * @param {Object} params
+ * @param {string} params.name - The name of the collection
+ * @returns {Promise<Object>} - The created collection object
+ */
+async function createCollection(params) {
+  if (!figma.variables || !figma.variables.createVariableCollection) {
+    throw new Error("Figma Variables API not available");
+  }
+  const { name } = params || {};
+  if (!name) {
+    throw new Error("Missing required parameter: name");
+  }
+  const collection = figma.variables.createVariableCollection(name);
+  return {
+    id: collection.id,
+    name: collection.name,
+    key: collection.key,
+    defaultModeId: collection.defaultModeId,
+    modes: collection.modes
+  };
+}
+
+/**
+ * Renames a node in the Figma document.
+ * @param {Object} params
+ * @param {string} params.nodeId - The ID of the node to rename
+ * @param {string} params.name - The new name for the node
+ * @returns {Promise<Object>} - The renamed node info
+ */
+async function renameNode(params) {
+  const { nodeId, name } = params || {};
+  if (!nodeId || !name) {
+    throw new Error("Missing required parameters: nodeId, name");
+  }
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) {
+    throw new Error(`Node not found: ${nodeId}`);
+  }
+  node.name = name;
+  return {
+    id: node.id,
+    name: node.name,
+    type: node.type
+  };
 }
 
 /**

@@ -2932,7 +2932,68 @@ server.tool(
   }
 );
 
+// Figma Variables: Create a new collection
+server.tool(
+  "create_collection",
+  "Create a new variable collection in the Figma document. Returns the created collection object with id, name, key, defaultModeId, and modes.",
+  {
+    name: z.string().describe("The name of the collection to create")
+  },
+  async ({ name }): Promise<any> => {
+    try {
+      const result = await sendCommandToFigma("create_collection", { name });
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Created collection: ${JSON.stringify(result, null, 2)}`
+          }
+        ]
+      };
+    } catch (error: any) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error creating collection: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
 
+// Rename a node
+server.tool(
+  "rename_node",
+  "Rename a node in the Figma document. Returns the updated node info.",
+  {
+    nodeId: z.string().describe("The ID of the node to rename"),
+    name: z.string().describe("The new name for the node")
+  },
+  async ({ nodeId, name }): Promise<any> => {
+    try {
+      const result = await sendCommandToFigma("rename_node", { nodeId, name });
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Renamed node: ${JSON.stringify(result, null, 2)}`
+          }
+        ]
+      };
+    } catch (error: any) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error renaming node: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
 
 // Define command types and parameters
 type FigmaCommand =
@@ -2979,11 +3040,13 @@ type FigmaCommand =
   | "set_selections"
   | "list_variables"
   | "list_collections"
+  | "create_collection"
   | "get_node_variables"
   | "get_node_paints"
   | "set_node_paints"
   | "create_variable"
-  | "set_variable_value";
+  | "set_variable_value"
+  | "rename_node";
 
 // Define the parameters for each command
 type CommandParams = {
@@ -3135,7 +3198,9 @@ type CommandParams = {
   };
   list_variables: Record<string, never>;
   list_collections: Record<string, never>;
+  create_collection: { name: string };
   get_node_variables: { nodeId: string };
+  rename_node: { nodeId: string; name: string };
   get_node_paints: { nodeId: string };
   set_node_paints: {
     nodeId: string;
