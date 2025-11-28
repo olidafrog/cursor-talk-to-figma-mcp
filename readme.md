@@ -181,6 +181,7 @@ The MCP server provides the following tools for interacting with Figma:
 
 - `move_node` - Move a node to a new position
 - `resize_node` - Resize a node with new dimensions
+- `rename_node` - Rename a node in the Figma document
 - `delete_node` - Delete a node
 - `delete_multiple_nodes` - Delete multiple nodes at once efficiently
 - `clone_node` - Create a copy of an existing node with optional position offset
@@ -198,6 +199,7 @@ The MCP server provides the following tools for interacting with Figma:
 
 - `list_variables` - List all local variables in the current Figma document
 - `list_collections` - List all variable collections in the document
+- `create_collection` - Create a new variable collection in the Figma document
 - `get_node_variables` - Get all variable bindings for a specific node
 - `create_variable` - Create a new variable (supports FLOAT, STRING, BOOLEAN, COLOR types)
 - `set_variable_value` - Set the value of a variable, with optional mode support
@@ -271,11 +273,13 @@ When working with the Figma MCP:
 
 12. For working with variables and design tokens:
     - Use `list_collections` to see available variable collections
+    - Create a new collection with `create_collection` if needed (e.g., "Primitives", "Semantic")
     - Use `list_variables` to explore existing variables in the document
-    - Create new variables with `create_variable` specifying type (FLOAT, STRING, BOOLEAN, COLOR)
-    - Use `set_variable_value` to update variable values across modes
+    - Create new variables with `create_variable` specifying type (FLOAT, STRING, BOOLEAN, COLOR) and collection ID
+    - Use `set_variable_value` to set variable values (required after creation)
     - Bind variables to node properties using `set_node_paints` with boundVariables
     - Use `get_node_variables` to inspect which variables are bound to a node
+    - Use `rename_node` to rename nodes to match variable naming conventions (e.g., using "/" for hierarchy)
     - Variables enable consistent theming and design token management
 
 ## License

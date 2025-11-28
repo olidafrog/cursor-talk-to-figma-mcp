@@ -75,24 +75,35 @@
         font-weight: 500;
         color: #cccccc;
       }
-      .status {
+      .status-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
         margin-top: 16px;
-        padding: 12px;
-        border-radius: 6px;
+        height: 32px;
+      }
+      .status-container {
+        display: flex;
+        align-items: center;
+        gap: 8px;
         font-size: 14px;
+        color: #e0e0e0;
+        font-weight: 500;
+        white-space: nowrap;
       }
-      .status.connected {
-        background-color: #1a472a;
-        color: #4ade80;
+      .status-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background-color: #ff4d4d; /* Default disconnected red */
       }
-      .status.disconnected {
-        background-color: #471a1a;
-        color: #ff9999;
+      .status-dot.connected {
+        background-color: #4ade80;
       }
-      .status.info {
-        background-color: #1a3147;
-        color: #66b3ff;
+      .status-dot.connecting {
+        background-color: #66b3ff;
       }
+
       .section {
         margin-bottom: 24px;
       }
@@ -167,6 +178,67 @@
       .operation-error {
         color: #ff9999;
       }
+      
+      /* Channel ID styles */
+      .channel-container {
+        display: none;
+        flex: 1;
+        justify-content: flex-end;
+      }
+      .channel-container.visible {
+        display: flex;
+      }
+      .channel-label {
+        display: none; /* Hide label to save space/reduce clutter as requested */
+      }
+      .channel-id {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        background-color: #2d2d2d;
+        border: 1px solid #444444;
+        border-radius: 4px;
+        padding: 4px 8px; /* Smaller padding */
+        font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', monospace;
+        font-size: 12px; /* Smaller font */
+        font-weight: 500;
+        color: #18a0fb;
+        letter-spacing: 0.5px;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        user-select: none;
+        height: 24px; /* Fixed height to match line height */
+        box-sizing: border-box;
+      }
+      .channel-id:hover {
+        background-color: #363636;
+        border-color: #18a0fb;
+      }
+      .channel-id:active {
+        transform: scale(0.98);
+      }
+      .channel-id.copied {
+        background-color: #1a472a;
+        border-color: #4ade80;
+        color: #4ade80;
+      }
+      .channel-id-icon {
+        width: 12px; /* Smaller icon */
+        height: 12px;
+        opacity: 0.6;
+      }
+      .channel-id:hover .channel-id-icon {
+        opacity: 1;
+      }
+      .button-container {
+        display: flex;
+        gap: 8px;
+        width: 100%;
+      }
+      .button-container button {
+        flex: 1;
+        margin-top: 0;
+      }
     </style>
   </head>
   <body>
@@ -192,27 +264,37 @@
       <div id="content-connection" class="tab-content active">
         <div class="section">
           <label for="port">WebSocket Server Port</label>
-          <div style="display: flex; gap: 8px">
-            <input
-              type="number"
-              id="port"
-              placeholder="3055"
-              value="3055"
-              min="1024"
-              max="65535"
-            />
+          <input
+            type="number"
+            id="port"
+            placeholder="3055"
+            value="3055"
+            min="1024"
+            max="65535"
+          />
+          <div class="button-container">
             <button id="btn-connect" class="primary">Connect</button>
+            <button id="btn-disconnect" class="secondary" disabled>
+              Disconnect
+            </button>
           </div>
         </div>
 
-        <div id="connection-status" class="status disconnected">
-          Not connected to Cursor MCP server
-        </div>
+        <div class="status-row">
+          <div class="status-container">
+            <div id="status-dot" class="status-dot"></div>
+            <span id="status-text">Not connected</span>
+          </div>
 
-        <div class="section">
-          <button id="btn-disconnect" class="secondary" disabled>
-            Disconnect
-          </button>
+          <div id="channel-container" class="channel-container">
+            <div id="channel-id" class="channel-id" title="Click to copy">
+              <span id="channel-id-text"></span>
+              <svg class="channel-id-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+              </svg>
+            </div>
+          </div>
         </div>
         
         <!-- Add Progress Bar Section -->
@@ -267,7 +349,11 @@
       const portInput = document.getElementById("port");
       const connectButton = document.getElementById("btn-connect");
       const disconnectButton = document.getElementById("btn-disconnect");
-      const connectionStatus = document.getElementById("connection-status");
+      const statusDot = document.getElementById("status-dot");
+      const statusText = document.getElementById("status-text");
+      const channelContainer = document.getElementById("channel-container");
+      const channelIdElement = document.getElementById("channel-id");
+      const channelIdText = document.getElementById("channel-id-text");
 
       // Tabs
       const tabs = document.querySelectorAll(".tab");
@@ -281,20 +367,41 @@
       const progressPercentage = document.getElementById("progress-percentage");
 
       // Initialize UI
-      function updateConnectionStatus(isConnected, message) {
+      function updateConnectionStatus(isConnected, message, channelName) {
         state.connected = isConnected;
-        connectionStatus.innerHTML =
-          message ||
-          (isConnected
-            ? "Connected to Cursor MCP server"
-            : "Not connected to Cursor MCP server");
-        connectionStatus.className = `status ${
-          isConnected ? "connected" : "disconnected"
-        }`;
+        
+        // Update status text
+        let displayText = message;
+        if (!message) {
+          displayText = isConnected ? "Connected" : "Disconnected";
+        } else if (message.startsWith("Connected to server") || message === "Already connected to server") {
+          displayText = "Connected";
+        } else if (message === "Disconnected from server") {
+          displayText = "Disconnected";
+        }
+        
+        statusText.textContent = displayText;
+
+        // Update status dot
+        statusDot.className = "status-dot"; // reset
+        if (isConnected) {
+          statusDot.classList.add("connected");
+        } else if (displayText === "Connecting..." || displayText === "Disconnecting...") {
+          statusDot.classList.add("connecting");
+        }
 
         connectButton.disabled = isConnected;
         disconnectButton.disabled = !isConnected;
         portInput.disabled = isConnected;
+
+        // Show/hide channel container
+        if (isConnected && channelName) {
+          channelIdText.textContent = channelName;
+          channelContainer.classList.add("visible");
+        } else {
+          channelContainer.classList.remove("visible");
+          channelIdElement.classList.remove("copied");
+        }
       }
 
       // Connect to WebSocket server
@@ -335,7 +442,8 @@
                   const channelName = data.channel;
                   updateConnectionStatus(
                     true,
-                    `Connected to server on port ${port} in channel: <strong>${channelName}</strong>`
+                    `Connected to server on port ${port}`,
+                    channelName
                   );
 
                   // Notify the plugin code
@@ -529,6 +637,55 @@
         return result;
       }
 
+      // Copy channel ID to clipboard
+      function copyChannelId() {
+        const channelId = channelIdText.textContent;
+        if (!channelId) return;
+
+        // Use fallback method for Figma plugin iframe context
+        const textArea = document.createElement("textarea");
+        textArea.value = channelId;
+        textArea.style.position = "fixed";
+        textArea.style.left = "-9999px";
+        textArea.style.top = "-9999px";
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+
+        try {
+          const successful = document.execCommand("copy");
+          if (successful) {
+            // Visual feedback
+            channelIdElement.classList.add("copied");
+            
+            // Show notification
+            parent.postMessage(
+              {
+                pluginMessage: {
+                  type: "notify",
+                  message: `Channel ID "${channelId}" copied to clipboard!`,
+                },
+              },
+              "*"
+            );
+
+            // Reset after 2 seconds
+            setTimeout(() => {
+              channelIdElement.classList.remove("copied");
+            }, 2000);
+          } else {
+            console.error("Failed to copy channel ID: execCommand returned false");
+          }
+        } catch (err) {
+          console.error("Failed to copy channel ID:", err);
+        }
+
+        document.body.removeChild(textArea);
+      }
+
+      // Channel ID click handler
+      channelIdElement.addEventListener("click", copyChannelId);
+
       // Tab switching
       tabs.forEach((tab) => {
         tab.addEventListener("click", () => {
@@ -545,14 +702,12 @@
       connectButton.addEventListener("click", () => {
         const port = parseInt(portInput.value, 10) || 3055;
         updateConnectionStatus(false, "Connecting...");
-        connectionStatus.className = "status info";
         connectToServer(port);
       });
 
       // Disconnect from server
       disconnectButton.addEventListener("click", () => {
         updateConnectionStatus(false, "Disconnecting...");
-        connectionStatus.className = "status info";
         disconnectFromServer();
       });
 
