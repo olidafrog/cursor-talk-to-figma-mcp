@@ -5,6 +5,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import WebSocket from "ws";
 import { v4 as uuidv4 } from "uuid";
+import { startRelayServer } from "./relay.js";
 
 // Define TypeScript interfaces for Figma responses
 interface FigmaResponse {
@@ -84,6 +85,13 @@ const args = process.argv.slice(2);
 const serverArg = args.find(arg => arg.startsWith('--server='));
 const serverUrl = serverArg ? serverArg.split('=')[1] : 'localhost';
 const WS_URL = serverUrl === 'localhost' ? `ws://${serverUrl}` : `wss://${serverUrl}`;
+
+// Check for relay-only mode
+const relayOnlyMode = args.includes('--relay-only');
+
+// Check for port override
+const portArg = args.find(arg => arg.startsWith('--port='));
+const relayPort = portArg ? parseInt(portArg.split('=')[1], 10) : 3055;
 
 // Document Info Tool
 server.tool(
@@ -3527,9 +3535,41 @@ server.tool(
 
 // Start the server
 async function main() {
+  // Handle --relay-only mode: just start the relay and keep running
+  if (relayOnlyMode) {
+    logger.info('Starting in relay-only mode...');
+    try {
+      await startRelayServer(relayPort);
+      logger.info(`Relay server started on port ${relayPort}. Press Ctrl+C to stop.`);
+      // Keep the process alive
+      await new Promise(() => {}); // Never resolves
+    } catch (error) {
+      logger.error(`Failed to start relay server: ${error instanceof Error ? error.message : String(error)}`);
+      process.exit(1);
+    }
+    return;
+  }
+
+  // Normal mode: Start embedded relay server, then MCP server
+  try {
+    await startRelayServer(relayPort);
+    logger.info(`Embedded relay server started on port ${relayPort}`);
+  } catch (error) {
+    // If port is already in use, assume external relay is running
+    if (error instanceof Error && error.message.includes('already in use')) {
+      logger.info(`Relay server already running on port ${relayPort}, using existing server`);
+    } else {
+      logger.warn(`Could not start embedded relay: ${error instanceof Error ? error.message : String(error)}`);
+      logger.warn('Continuing without embedded relay - ensure external relay is running');
+    }
+  }
+
+  // Give the relay server a moment to fully initialize
+  await new Promise(resolve => setTimeout(resolve, 100));
+
   try {
     // Try to connect to Figma socket server
-    connectToFigma();
+    connectToFigma(relayPort);
   } catch (error) {
     logger.warn(`Could not connect to Figma initially: ${error instanceof Error ? error.message : String(error)}`);
     logger.warn('Will try to connect when the first command is sent');
