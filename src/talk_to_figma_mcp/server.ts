@@ -1347,16 +1347,20 @@ server.tool(
   "create_component_instance",
   "Create an instance of a component in Figma",
   {
-    componentKey: z.string().describe("Key of the component to instantiate"),
+    componentKey: z.string().optional().describe("Key of the component to instantiate (for published components)"),
+    componentId: z.string().optional().describe("ID of a local component to instantiate"),
     x: z.number().describe("X position"),
     y: z.number().describe("Y position"),
+    parentId: z.string().optional().describe("Parent node ID to append the instance to (defaults to current page)"),
   },
-  async ({ componentKey, x, y }: any) => {
+  async ({ componentKey, componentId, x, y, parentId }: any) => {
     try {
       const result = await sendCommandToFigma("create_component_instance", {
         componentKey,
+        componentId,
         x,
         y,
+        parentId,
       });
       const typedResult = result as any;
       return {
@@ -3054,7 +3058,18 @@ type FigmaCommand =
   | "set_node_paints"
   | "create_variable"
   | "set_variable_value"
-  | "rename_node";
+  | "rename_node"
+  | "create_local_instance"
+  | "create_component"
+  | "create_component_from_scratch"
+  | "create_component_set"
+  | "create_page"
+  | "switch_page"
+  | "get_all_pages"
+  | "set_opacity"
+  | "set_effects"
+  | "create_style"
+  | "reorder_child";
 
 // Define the parameters for each command
 type CommandParams = {
@@ -3126,9 +3141,11 @@ type CommandParams = {
   get_local_components: Record<string, never>;
   get_team_components: Record<string, never>;
   create_component_instance: {
-    componentKey: string;
+    componentKey?: string;
+    componentId?: string;
     x: number;
     y: number;
+    parentId?: string;
   };
   get_instance_overrides: {
     instanceNodeId: string | null;
@@ -3253,6 +3270,78 @@ type CommandParams = {
     valueType: "FLOAT" | "STRING" | "BOOLEAN" | "COLOR";
     value?: any; // Value can be of any type depending on the variable type
     variableReferenceId?: string; // Optional reference to another variable
+  };
+  create_local_instance: {
+    componentId: string;
+    parentId?: string;
+    x?: number;
+    y?: number;
+  };
+  create_component: {
+    nodeId: string;
+  };
+  create_component_from_scratch: {
+    name?: string;
+    x?: number;
+    y?: number;
+    width?: number;
+    height?: number;
+    parentId?: string;
+  };
+  create_component_set: {
+    componentIds: string[];
+    name?: string;
+  };
+  create_page: {
+    name?: string;
+  };
+  switch_page: {
+    pageId: string;
+  };
+  get_all_pages: Record<string, never>;
+  set_opacity: {
+    nodeId: string;
+    opacity: number;
+  };
+  set_effects: {
+    nodeId: string;
+    effects: Array<{
+      type: "DROP_SHADOW" | "INNER_SHADOW" | "LAYER_BLUR" | "BACKGROUND_BLUR";
+      visible?: boolean;
+      radius?: number;
+      color?: { r: number; g: number; b: number; a?: number };
+      offset?: { x: number; y: number };
+      spread?: number;
+      blendMode?: string;
+    }>;
+  };
+  create_style: {
+    name: string;
+    type: "FILL" | "TEXT" | "EFFECT";
+    paints?: Array<{
+      type: string;
+      color?: { r: number; g: number; b: number; a?: number };
+      visible?: boolean;
+      opacity?: number;
+    }>;
+    effects?: Array<{
+      type: string;
+      visible?: boolean;
+      radius?: number;
+      color?: { r: number; g: number; b: number; a?: number };
+      offset?: { x: number; y: number };
+      spread?: number;
+    }>;
+    fontSize?: number;
+    fontFamily?: string;
+    fontStyle?: string;
+    lineHeight?: number;
+    letterSpacing?: number;
+  };
+  reorder_child: {
+    parentId: string;
+    childId: string;
+    index: number;
   };
 };
 
@@ -3484,6 +3573,352 @@ function sendCommandToFigma(
     ws.send(JSON.stringify(request));
   });
 }
+
+// Create instance of a local component by ID, with optional parent
+server.tool(
+  "create_local_instance",
+  "Create an instance of a local (unpublished) component by its node ID, optionally inside a parent node",
+  {
+    componentId: z.string().describe("The node ID of the local component to instantiate"),
+    parentId: z.string().optional().describe("Parent node ID to append the instance into"),
+    x: z.number().optional().describe("X position").default(0),
+    y: z.number().optional().describe("Y position").default(0),
+  },
+  async ({ componentId, parentId, x, y }: any) => {
+    try {
+      const result = await sendCommandToFigma("create_local_instance", {
+        componentId, parentId, x, y,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error creating local instance: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Create Component from existing node
+server.tool(
+  "create_component",
+  "Convert an existing frame or group into a reusable component",
+  {
+    nodeId: z.string().describe("The ID of the node to convert into a component"),
+  },
+  async ({ nodeId }: any) => {
+    try {
+      const result = await sendCommandToFigma("create_component", { nodeId });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error creating component: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Create Component from scratch
+server.tool(
+  "create_component_from_scratch",
+  "Create a new empty component node from scratch",
+  {
+    name: z.string().optional().describe("Name for the component"),
+    x: z.number().optional().describe("X position"),
+    y: z.number().optional().describe("Y position"),
+    width: z.number().optional().describe("Width of the component"),
+    height: z.number().optional().describe("Height of the component"),
+    parentId: z.string().optional().describe("Parent node ID to append the component to"),
+  },
+  async ({ name, x, y, width, height, parentId }: any) => {
+    try {
+      const result = await sendCommandToFigma("create_component_from_scratch", {
+        name, x, y, width, height, parentId,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error creating component from scratch: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Create Component Set (variants)
+server.tool(
+  "create_component_set",
+  "Group variant components into a component set",
+  {
+    componentIds: z.preprocess(
+      (val) => (typeof val === "string" ? JSON.parse(val) : val),
+      z.array(z.string())
+    ).describe("Array of component node IDs to combine as variants"),
+    name: z.string().optional().describe("Name for the component set"),
+  },
+  async ({ componentIds, name }: any) => {
+    try {
+      const result = await sendCommandToFigma("create_component_set", {
+        componentIds, name,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error creating component set: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Create Page
+server.tool(
+  "create_page",
+  "Create a new page in the Figma document",
+  {
+    name: z.string().optional().describe("Name for the new page"),
+  },
+  async ({ name }: any) => {
+    try {
+      const result = await sendCommandToFigma("create_page", { name });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error creating page: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Switch Page
+server.tool(
+  "switch_page",
+  "Navigate to a specific page in the Figma document",
+  {
+    pageId: z.string().describe("The ID of the page to switch to"),
+  },
+  async ({ pageId }: any) => {
+    try {
+      const result = await sendCommandToFigma("switch_page", { pageId });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error switching page: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Get All Pages
+server.tool(
+  "get_all_pages",
+  "List all pages in the Figma document with their IDs and child counts",
+  {},
+  async () => {
+    try {
+      const result = await sendCommandToFigma("get_all_pages");
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error getting pages: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Set Opacity
+server.tool(
+  "set_opacity",
+  "Set the opacity of a node (0 to 1)",
+  {
+    nodeId: z.string().describe("The ID of the node"),
+    opacity: z.number().min(0).max(1).describe("Opacity value from 0 (transparent) to 1 (opaque)"),
+  },
+  async ({ nodeId, opacity }: any) => {
+    try {
+      const result = await sendCommandToFigma("set_opacity", { nodeId, opacity });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error setting opacity: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Set Effects
+server.tool(
+  "set_effects",
+  "Set effects (drop shadow, inner shadow, layer blur, background blur) on a node",
+  {
+    nodeId: z.string().describe("The ID of the node"),
+    effects: z.array(z.object({
+      type: z.enum(["DROP_SHADOW", "INNER_SHADOW", "LAYER_BLUR", "BACKGROUND_BLUR"]).describe("Effect type"),
+      visible: z.boolean().optional().describe("Whether the effect is visible"),
+      radius: z.number().optional().describe("Blur radius"),
+      color: z.object({
+        r: z.number(), g: z.number(), b: z.number(), a: z.number().optional(),
+      }).optional().describe("Effect color (for shadows)"),
+      offset: z.object({
+        x: z.number(), y: z.number(),
+      }).optional().describe("Shadow offset"),
+      spread: z.number().optional().describe("Shadow spread"),
+      blendMode: z.string().optional().describe("Blend mode"),
+    })).describe("Array of effects to apply"),
+  },
+  async ({ nodeId, effects }: any) => {
+    try {
+      const result = await sendCommandToFigma("set_effects", { nodeId, effects });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error setting effects: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Create Style
+server.tool(
+  "create_style",
+  "Create a named reusable style (fill/paint, text, or effect) in the document",
+  {
+    name: z.string().describe("Name for the style"),
+    type: z.enum(["FILL", "TEXT", "EFFECT"]).describe("Type of style to create"),
+    paints: z.array(z.object({
+      type: z.string(),
+      color: z.object({
+        r: z.number(), g: z.number(), b: z.number(), a: z.number().optional(),
+      }).optional(),
+      visible: z.boolean().optional(),
+      opacity: z.number().optional(),
+    })).optional().describe("Paint array for FILL styles"),
+    effects: z.array(z.object({
+      type: z.string(),
+      visible: z.boolean().optional(),
+      radius: z.number().optional(),
+      color: z.object({
+        r: z.number(), g: z.number(), b: z.number(), a: z.number().optional(),
+      }).optional(),
+      offset: z.object({
+        x: z.number(), y: z.number(),
+      }).optional(),
+      spread: z.number().optional(),
+    })).optional().describe("Effects array for EFFECT styles"),
+    fontSize: z.number().optional().describe("Font size for TEXT styles"),
+    fontFamily: z.string().optional().describe("Font family for TEXT styles"),
+    fontStyle: z.string().optional().describe("Font style for TEXT styles (e.g. Regular, Bold)"),
+    lineHeight: z.number().optional().describe("Line height for TEXT styles"),
+    letterSpacing: z.number().optional().describe("Letter spacing for TEXT styles"),
+  },
+  async ({ name, type, paints, effects, fontSize, fontFamily, fontStyle, lineHeight, letterSpacing }: any) => {
+    try {
+      const result = await sendCommandToFigma("create_style", {
+        name, type, paints, effects, fontSize, fontFamily, fontStyle, lineHeight, letterSpacing,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error creating style: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Reorder Child - move a child node to a specific index within its parent
+server.tool(
+  "reorder_child",
+  "Reorder a child node within its parent by moving it to a specific index (0-based). Use this to change sibling order.",
+  {
+    parentId: z.string().describe("The ID of the parent node"),
+    childId: z.string().describe("The ID of the child node to reorder"),
+    index: z.number().describe("The target index (0-based) within the parent's children"),
+  },
+  async ({ parentId, childId, index }: any) => {
+    try {
+      const result = await sendCommandToFigma("reorder_child", { parentId, childId, index });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error reordering child: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
 
 // Update the join_channel tool
 server.tool(

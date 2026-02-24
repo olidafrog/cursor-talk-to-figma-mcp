@@ -251,6 +251,28 @@ async function handleCommand(command, params) {
       return await setNodePaints(params);
     case "get_node_paints":
       return await getNodePaints(params);
+    case "create_component":
+      return await createComponentFromNode(params);
+    case "create_component_from_scratch":
+      return await createComponentFromScratch(params);
+    case "create_component_set":
+      return await createComponentSet(params);
+    case "create_local_instance":
+      return await createLocalInstance(params);
+    case "create_page":
+      return await createPage(params);
+    case "switch_page":
+      return await switchPage(params);
+    case "get_all_pages":
+      return await getAllPages();
+    case "set_opacity":
+      return await setOpacity(params);
+    case "set_effects":
+      return await setEffects(params);
+    case "create_style":
+      return await createStyle(params);
+    case "reorder_child":
+      return await reorderChild(params);
     default:
       throw new Error(`Unknown command: ${command}`);
   }
@@ -1182,20 +1204,44 @@ async function getLocalComponents() {
 // }
 
 async function createComponentInstance(params) {
-  const { componentKey, x = 0, y = 0 } = params || {};
+  const { componentKey, componentId, x = 0, y = 0, parentId } = params || {};
 
-  if (!componentKey) {
-    throw new Error("Missing componentKey parameter");
+  if (!componentKey && !componentId) {
+    throw new Error("Missing componentKey or componentId parameter");
   }
 
   try {
-    const component = await figma.importComponentByKeyAsync(componentKey);
+    var component;
+    if (componentId) {
+      // Use local component by ID
+      var node = await figma.getNodeByIdAsync(componentId);
+      if (!node) {
+        throw new Error("Component not found with ID: " + componentId);
+      }
+      if (node.type !== "COMPONENT") {
+        throw new Error("Node is not a component: " + componentId + " (type: " + node.type + ")");
+      }
+      component = node;
+    } else {
+      // Use published component by key
+      component = await figma.importComponentByKeyAsync(componentKey);
+    }
+
     const instance = component.createInstance();
 
     instance.x = x;
     instance.y = y;
 
-    figma.currentPage.appendChild(instance);
+    if (parentId) {
+      const parent = await figma.getNodeByIdAsync(parentId);
+      if (parent && "appendChild" in parent) {
+        parent.appendChild(instance);
+      } else {
+        figma.currentPage.appendChild(instance);
+      }
+    } else {
+      figma.currentPage.appendChild(instance);
+    }
 
     return {
       id: instance.id,
@@ -4356,5 +4402,303 @@ async function setSelections(params) {
     selectedNodes: selectedNodes,
     notFoundIds: notFoundIds,
     message: `Selected ${nodes.length} nodes${notFoundIds.length > 0 ? ` (${notFoundIds.length} not found)` : ''}`
+  };
+}
+
+// Convert an existing frame/group into a component
+async function createComponentFromNode(params) {
+  const { nodeId } = params || {};
+  if (!nodeId) {
+    throw new Error("Missing nodeId parameter");
+  }
+
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) {
+    throw new Error(`Node not found: ${nodeId}`);
+  }
+
+  const component = figma.createComponentFromNode(node);
+  return {
+    id: component.id,
+    name: component.name,
+    type: component.type,
+  };
+}
+
+// Create a new empty component node from scratch
+async function createComponentFromScratch(params) {
+  const component = figma.createComponent();
+  component.name = params.name || "Component";
+  component.x = params.x || 0;
+  component.y = params.y || 0;
+  component.resize(params.width || 100, params.height || 100);
+
+  if (params.parentId) {
+    const parent = await figma.getNodeByIdAsync(params.parentId);
+    if (parent && "appendChild" in parent) {
+      parent.appendChild(component);
+    }
+  } else {
+    figma.currentPage.appendChild(component);
+  }
+
+  return {
+    id: component.id,
+    name: component.name,
+    type: component.type,
+  };
+}
+
+// Group variant components into a component set
+async function createComponentSet(params) {
+  const { componentIds, name } = params || {};
+  if (!componentIds || !Array.isArray(componentIds) || componentIds.length === 0) {
+    throw new Error("Missing or invalid componentIds parameter");
+  }
+
+  const components = [];
+  for (const id of componentIds) {
+    const node = await figma.getNodeByIdAsync(id);
+    if (node && node.type === "COMPONENT") {
+      components.push(node);
+    }
+  }
+
+  if (components.length < 2) {
+    throw new Error("At least 2 valid component nodes are required to create a component set");
+  }
+
+  const set = figma.combineAsVariants(components, figma.currentPage);
+  if (name) {
+    set.name = name;
+  }
+
+  return {
+    id: set.id,
+    name: set.name,
+    type: set.type,
+    childCount: set.children.length,
+  };
+}
+
+// Create a new page in the document
+async function createPage(params) {
+  const page = figma.createPage();
+  page.name = (params && params.name) || "New Page";
+  return {
+    id: page.id,
+    name: page.name,
+  };
+}
+
+// Navigate to a specific page
+async function switchPage(params) {
+  const { pageId } = params || {};
+  if (!pageId) {
+    throw new Error("Missing pageId parameter");
+  }
+
+  const page = await figma.getNodeByIdAsync(pageId);
+  if (!page || page.type !== "PAGE") {
+    throw new Error(`Page not found: ${pageId}`);
+  }
+
+  await figma.setCurrentPageAsync(page);
+  return {
+    id: page.id,
+    name: page.name,
+  };
+}
+
+// List all pages in the document
+async function getAllPages() {
+  return {
+    pages: figma.root.children.map(function (p) {
+      return {
+        id: p.id,
+        name: p.name,
+        childCount: p.children.length,
+      };
+    }),
+    currentPageId: figma.currentPage.id,
+  };
+}
+
+// Set node opacity
+async function setOpacity(params) {
+  const { nodeId, opacity } = params || {};
+  if (!nodeId) {
+    throw new Error("Missing nodeId parameter");
+  }
+  if (opacity === undefined || opacity === null) {
+    throw new Error("Missing opacity parameter");
+  }
+
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) {
+    throw new Error(`Node not found: ${nodeId}`);
+  }
+
+  if (!("opacity" in node)) {
+    throw new Error(`Node type ${node.type} does not support opacity`);
+  }
+
+  node.opacity = opacity;
+  return {
+    id: node.id,
+    name: node.name,
+    opacity: node.opacity,
+  };
+}
+
+// Set effects on a node
+async function setEffects(params) {
+  const { nodeId, effects } = params || {};
+  if (!nodeId) {
+    throw new Error("Missing nodeId parameter");
+  }
+  if (!effects || !Array.isArray(effects)) {
+    throw new Error("Missing or invalid effects parameter");
+  }
+
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) {
+    throw new Error(`Node not found: ${nodeId}`);
+  }
+
+  if (!("effects" in node)) {
+    throw new Error(`Node type ${node.type} does not support effects`);
+  }
+
+  node.effects = effects;
+  return {
+    id: node.id,
+    name: node.name,
+    effectCount: node.effects.length,
+  };
+}
+
+// Create a named reusable style
+async function createStyle(params) {
+  const { name, type } = params || {};
+  if (!name) {
+    throw new Error("Missing name parameter");
+  }
+  if (!type) {
+    throw new Error("Missing type parameter");
+  }
+
+  var style;
+  switch (type) {
+    case "FILL": {
+      style = figma.createPaintStyle();
+      style.name = name;
+      if (params.paints) {
+        style.paints = params.paints;
+      }
+      break;
+    }
+    case "TEXT": {
+      style = figma.createTextStyle();
+      style.name = name;
+      if (params.fontSize !== undefined) {
+        style.fontSize = params.fontSize;
+      }
+      if (params.fontFamily) {
+        var fontStyle = params.fontStyle || "Regular";
+        await figma.loadFontAsync({ family: params.fontFamily, style: fontStyle });
+        style.fontName = { family: params.fontFamily, style: fontStyle };
+      }
+      if (params.lineHeight !== undefined) {
+        style.lineHeight = { value: params.lineHeight, unit: "PIXELS" };
+      }
+      if (params.letterSpacing !== undefined) {
+        style.letterSpacing = { value: params.letterSpacing, unit: "PIXELS" };
+      }
+      break;
+    }
+    case "EFFECT": {
+      style = figma.createEffectStyle();
+      style.name = name;
+      if (params.effects) {
+        style.effects = params.effects;
+      }
+      break;
+    }
+    default:
+      throw new Error(`Invalid style type: ${type}. Must be FILL, TEXT, or EFFECT.`);
+  }
+
+  return {
+    id: style.id,
+    name: style.name,
+    type: type,
+  };
+}
+
+// Create an instance of a local component by ID, with optional parent
+async function createLocalInstance(params) {
+  const { componentId, parentId, x = 0, y = 0 } = params || {};
+
+  if (!componentId) {
+    throw new Error("Missing componentId parameter");
+  }
+
+  var node = await figma.getNodeByIdAsync(componentId);
+  if (!node) {
+    throw new Error("Component not found with ID: " + componentId);
+  }
+  if (node.type !== "COMPONENT") {
+    throw new Error("Node is not a component: " + componentId + " (type: " + node.type + ")");
+  }
+
+  var instance = node.createInstance();
+  instance.x = x;
+  instance.y = y;
+
+  if (parentId) {
+    var parent = await figma.getNodeByIdAsync(parentId);
+    if (parent && "appendChild" in parent) {
+      parent.appendChild(instance);
+    } else {
+      figma.currentPage.appendChild(instance);
+    }
+  } else {
+    figma.currentPage.appendChild(instance);
+  }
+
+  return {
+    id: instance.id,
+    name: instance.name,
+    x: instance.x,
+    y: instance.y,
+    width: instance.width,
+    height: instance.height,
+  };
+}
+
+async function reorderChild(params) {
+  const { parentId, childId, index } = params || {};
+  if (!parentId) throw new Error("Missing parentId parameter");
+  if (!childId) throw new Error("Missing childId parameter");
+  if (index === undefined) throw new Error("Missing index parameter");
+
+  var parent = await figma.getNodeByIdAsync(parentId);
+  if (!parent) throw new Error("Parent node not found: " + parentId);
+  if (!("children" in parent)) throw new Error("Parent node does not support children");
+
+  var child = await figma.getNodeByIdAsync(childId);
+  if (!child) throw new Error("Child node not found: " + childId);
+
+  // insertChild moves the child to the specified index within the parent
+  parent.insertChild(index, child);
+
+  return {
+    id: child.id,
+    name: child.name,
+    newIndex: index,
+    parentId: parent.id,
+    parentName: parent.name,
+    childCount: parent.children.length,
   };
 }
