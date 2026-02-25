@@ -174,11 +174,14 @@ The MCP server provides the following tools for interacting with Figma:
 - `set_fill_color` - Set the fill color of a node (RGBA)
 - `set_stroke_color` - Set the stroke color and weight of a node
 - `set_corner_radius` - Set the corner radius of a node with optional per-corner control
+- `get_node_paints` - Retrieve the Paint[] definition (fills or strokes) from a node
+- `set_node_paints` - Set fills or strokes on a node, with support for binding to variables
 
 ### Layout & Organization
 
 - `move_node` - Move a node to a new position
 - `resize_node` - Resize a node with new dimensions
+- `rename_node` - Rename a node in the Figma document
 - `delete_node` - Delete a node
 - `delete_multiple_nodes` - Delete multiple nodes at once efficiently
 - `clone_node` - Create a copy of an existing node with optional position offset
@@ -187,9 +190,19 @@ The MCP server provides the following tools for interacting with Figma:
 
 - `get_styles` - Get information about local styles
 - `get_local_components` - Get information about local components
+- `get_team_components` - Get information about team library components
 - `create_component_instance` - Create an instance of a component
 - `get_instance_overrides` - Extract override properties from a selected component instance
 - `set_instance_overrides` - Apply extracted overrides to target instances
+
+### Variables & Design Tokens
+
+- `list_variables` - List all local variables in the current Figma document
+- `list_collections` - List all variable collections in the document
+- `create_collection` - Create a new variable collection in the Figma document
+- `get_node_variables` - Get all variable bindings for a specific node
+- `create_variable` - Create a new variable (supports FLOAT, STRING, BOOLEAN, COLOR types)
+- `set_variable_value` - Set the value of a variable, with optional mode support
 
 ### Export & Advanced
 
@@ -257,6 +270,17 @@ When working with the Figma MCP:
 - Use `get_reactions` to extract prototype flows,
 - set a default connector with `set_default_connector`,
 - and generate connector lines with `create_connections` for clear visual flow mapping.
+
+12. For working with variables and design tokens:
+    - Use `list_collections` to see available variable collections
+    - Create a new collection with `create_collection` if needed (e.g., "Primitives", "Semantic")
+    - Use `list_variables` to explore existing variables in the document
+    - Create new variables with `create_variable` specifying type (FLOAT, STRING, BOOLEAN, COLOR) and collection ID
+    - Use `set_variable_value` to set variable values (required after creation)
+    - Bind variables to node properties using `set_node_paints` with boundVariables
+    - Use `get_node_variables` to inspect which variables are bound to a node
+    - Use `rename_node` to rename nodes to match variable naming conventions (e.g., using "/" for hierarchy)
+    - Variables enable consistent theming and design token management
 
 ## License
 
