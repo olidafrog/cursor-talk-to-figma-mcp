@@ -5,6 +5,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import WebSocket from "ws";
 import { v4 as uuidv4 } from "uuid";
+import { startRelayServer } from "./relay.js";
 
 // Define TypeScript interfaces for Figma responses
 interface FigmaResponse {
@@ -84,6 +85,13 @@ const args = process.argv.slice(2);
 const serverArg = args.find(arg => arg.startsWith('--server='));
 const serverUrl = serverArg ? serverArg.split('=')[1] : 'localhost';
 const WS_URL = serverUrl === 'localhost' ? `ws://${serverUrl}` : `wss://${serverUrl}`;
+
+// Check for relay-only mode
+const relayOnlyMode = args.includes('--relay-only');
+
+// Check for port override
+const portArg = args.find(arg => arg.startsWith('--port='));
+const relayPort = portArg ? parseInt(portArg.split('=')[1], 10) : 3055;
 
 // Document Info Tool
 server.tool(
@@ -679,6 +687,116 @@ server.tool(
   }
 );
 
+// Get Node Paints Tool
+server.tool(
+  "get_node_paints",
+  "Retrieve the Paint[] definition (either fills or strokes) from a node in Figma. The returned array conforms to the Figma Plugin API Paint interface.",
+  {
+    nodeId: z.string().describe("The ID of the node whose paints to retrieve"),
+    paintsType: z
+      .enum(["fills", "strokes"])
+      .optional()
+      .default("fills")
+      .describe("Which paint list to return. Defaults to 'fills'."),
+  },
+  async ({ nodeId, paintsType }) => {
+    try {
+      const result = await sendCommandToFigma("get_node_paints", {
+        nodeId,
+        paintsType,
+      });
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error getting node paints: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Set Node Paints Tool
+server.tool(
+  "set_node_paints",
+  "Bind the fills or strokes of a node to a variable.",
+  {
+    nodeId: z.string().describe("The ID of the node to modify"),
+    paints: z
+    .array(
+      z.object({
+        type: z.enum([
+          'SOLID',
+          'GRADIENT_LINEAR',
+          'GRADIENT_RADIAL',
+          'GRADIENT_ANGULAR',
+          'GRADIENT_DIAMOND',
+          'IMAGE',
+          'VIDEO',
+          'VARIABLE_ALIAS',
+        ]),
+        visible: z.boolean().optional(),
+        opacity: z.number().min(0).max(1).optional(),
+        blendMode: z.string().optional(),
+        boundVariables: z.object({
+          color: z.object({
+            type: z.string().optional(),
+            variableId: z.string().describe("The ID of the variable to bind to the color in the format like VariableID:3:4"),
+        }).describe("Optional bound variables for the paint").optional(),
+      }).catchall(z.unknown())
+  })
+    .describe(
+      "Array of Paint objects. Each object must conform to the Paint interface: type, opacity, color, gradientStops, scaleMode, imageHash, etc."
+    )),
+    paintsType: z
+    .enum(["fills", "strokes"])
+    .optional()
+    .default("fills")
+    .describe("Whether to apply the paints to 'fills' (default) or 'strokes'."),
+  },
+  async ({ nodeId, paints, paintsType }) => {
+    try {
+      const result = await sendCommandToFigma("set_node_paints", {
+        nodeId,
+        paints,
+        paintsType: paintsType || "fills",
+      });
+      const typedResult = result as { name: string };
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Updated ${paintsType || "fills"} on node "${typedResult.name}".`,
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error setting node paints: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          },
+        ],
+      };
+    }
+  }
+);
+
 // Move Node Tool
 server.tool(
   "move_node",
@@ -984,7 +1102,37 @@ server.tool(
           {
             type: "text",
             text: `Error getting local components: ${error instanceof Error ? error.message : String(error)
-              }`,
+            }`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Get Team Components Tool
+server.tool(
+  "get_team_components",
+  "Get all team components from the Figma document",
+  {},
+  async () => {
+    try {
+      const result = await sendCommandToFigma("get_team_components");
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(result)
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error getting team components: ${error instanceof Error ? error.message : String(error)
+            }`,
           },
         ],
       };
@@ -1199,16 +1347,20 @@ server.tool(
   "create_component_instance",
   "Create an instance of a component in Figma",
   {
-    componentKey: z.string().describe("Key of the component to instantiate"),
+    componentKey: z.string().optional().describe("Key of the component to instantiate (for published components)"),
+    componentId: z.string().optional().describe("ID of a local component to instantiate"),
     x: z.number().describe("X position"),
     y: z.number().describe("Y position"),
+    parentId: z.string().optional().describe("Parent node ID to append the instance to (defaults to current page)"),
   },
-  async ({ componentKey, x, y }: any) => {
+  async ({ componentKey, componentId, x, y, parentId }: any) => {
     try {
       const result = await sendCommandToFigma("create_component_instance", {
         componentKey,
+        componentId,
         x,
         y,
+        parentId,
       });
       const typedResult = result as any;
       return {
@@ -2606,6 +2758,254 @@ This detailed process ensures you correctly interpret the reaction data, prepare
   }
 );
 
+// Figma Variables: List all variables
+server.tool(
+  "list_variables",
+  "List all local variables in the current Figma document. Returns an array of variable objects, including their id, name, type, and values.",
+  {},
+  async (): Promise<any> => {
+    try {
+      const result = await sendCommandToFigma("list_variables");
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(result, null, 2)
+          }
+        ]
+      };
+    } catch (error: any) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error listing variables: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
+
+// Figma Variables: Get variable bindings for a node
+server.tool(
+  "get_node_variables",
+  "Get all variable bindings for a specific node. Returns an object mapping property types (e.g., 'fills', 'strokes', 'opacity', etc.) to variable binding info.",
+  {
+    nodeId: z.string().describe("The ID of the node to get variable bindings for")
+  },
+  async ({ nodeId }: { nodeId: string }): Promise<any> => {
+    try {
+      const result = await sendCommandToFigma("get_node_variables", { nodeId });
+      return {
+        content: [
+          {
+            type: "text",
+            text: `These are the variables for the node: ${JSON.stringify(result, null, 2)}, you may use the 'list_variables' tool to find the name of the variables.`,
+          }
+        ]
+      };
+    } catch (error: any) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error getting node variables: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
+
+// Figma Variables: Create a new variable
+server.tool(
+  "create_variable",
+  "Create a new variable inside a collection. Returns the created variable object.",
+  {
+    name: z.string().describe("The name of the variable"),
+    resolvedType: z.enum(["FLOAT", "STRING", "BOOLEAN", "COLOR"]).describe("The type of the variable"),
+    description: z.string().optional().describe("Optional description for the variable"),
+    collectionId: z.string().describe("Collection ID to create the variable in you may use the 'list_collections' tool to find the collection ID")
+  },
+  async ({ name, resolvedType, description, collectionId }) => {
+    try {
+      // Structure matches Figma plugin API: https://www.figma.com/plugin-docs/api/VariableCollection/
+      const params: any = {
+        name,
+        resolvedType,
+        description,
+        collectionId
+      };
+
+      const result = await sendCommandToFigma("create_variable", params);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `The variable has been created ${JSON.stringify(result, null, 2)} now you must 'set_variable_value' to assign the proper value to the variable. The variable will not be usable until it has a value assigned to it.`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error creating variable: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
+
+server.tool(
+  "set_variable_value",
+  "Set the value of a variable in the Figma document. Returns the updated variable object.",
+  {
+    variableId: z.string().describe("The ID of the variable to update"),
+    modeId: z.string().optional().describe("Optional mode ID for the variable, if applicable"),
+    value: z.object({
+      r: z.number().optional(),
+      g: z.number().optional(),
+      b: z.number().optional(),
+      a: z.number().optional()
+    }).optional().describe("The value for the variable"),
+    valueType: z.enum(["FLOAT", "STRING", "BOOLEAN", "COLOR"]).describe("The type of the value to set"),
+    variableReferenceId: z.string().optional().describe("Optional reference to another variable")
+  },
+  async ({ variableId, modeId, value, valueType, variableReferenceId }) => {
+    try {
+      const formattedValue = valueType === "COLOR" && value
+        ? {
+            r: value.r || 0,
+            g: value.g || 0,
+            b: value.b || 0,
+            a: value.a || 1
+          }
+        : value;
+
+      const result = await sendCommandToFigma("set_variable_value", {
+        variableId,
+        modeId,
+        value: formattedValue,
+        valueType,
+        variableReferenceId
+      });
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(result)
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error setting variable value: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
+
+server.tool(
+  "list_collections",
+  "List all variable collections in the Figma document. Returns an array of collection objects, including their id, name, and type.",
+
+  {},
+  async (): Promise<any> => {
+    try {
+      const result = await sendCommandToFigma("list_collections");
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(result, null, 2)
+          }
+        ]
+      };
+    } catch (error: any) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error listing collections: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
+
+// Figma Variables: Create a new collection
+server.tool(
+  "create_collection",
+  "Create a new variable collection in the Figma document. Returns the created collection object with id, name, key, defaultModeId, and modes.",
+  {
+    name: z.string().describe("The name of the collection to create")
+  },
+  async ({ name }): Promise<any> => {
+    try {
+      const result = await sendCommandToFigma("create_collection", { name });
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Created collection: ${JSON.stringify(result, null, 2)}`
+          }
+        ]
+      };
+    } catch (error: any) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error creating collection: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
+
+// Rename a node
+server.tool(
+  "rename_node",
+  "Rename a node in the Figma document. Returns the updated node info.",
+  {
+    nodeId: z.string().describe("The ID of the node to rename"),
+    name: z.string().describe("The new name for the node")
+  },
+  async ({ nodeId, name }): Promise<any> => {
+    try {
+      const result = await sendCommandToFigma("rename_node", { nodeId, name });
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Renamed node: ${JSON.stringify(result, null, 2)}`
+          }
+        ]
+      };
+    } catch (error: any) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error renaming node: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
 
 // Define command types and parameters
 type FigmaCommand =
@@ -2625,6 +3025,7 @@ type FigmaCommand =
   | "delete_multiple_nodes"
   | "get_styles"
   | "get_local_components"
+  | "get_team_components"
   | "create_component_instance"
   | "get_instance_overrides"
   | "set_instance_overrides"
@@ -2648,8 +3049,29 @@ type FigmaCommand =
   | "set_default_connector"
   | "create_connections"
   | "set_focus"
-  | "set_selections";
+  | "set_selections"
+  | "list_variables"
+  | "list_collections"
+  | "create_collection"
+  | "get_node_variables"
+  | "get_node_paints"
+  | "set_node_paints"
+  | "create_variable"
+  | "set_variable_value"
+  | "rename_node"
+  | "create_local_instance"
+  | "create_component"
+  | "create_component_from_scratch"
+  | "create_component_set"
+  | "create_page"
+  | "switch_page"
+  | "get_all_pages"
+  | "set_opacity"
+  | "set_effects"
+  | "create_style"
+  | "reorder_child";
 
+// Define the parameters for each command
 type CommandParams = {
   get_document_info: Record<string, never>;
   get_selection: Record<string, never>;
@@ -2719,9 +3141,11 @@ type CommandParams = {
   get_local_components: Record<string, never>;
   get_team_components: Record<string, never>;
   create_component_instance: {
-    componentKey: string;
+    componentKey?: string;
+    componentId?: string;
     x: number;
     y: number;
+    parentId?: string;
   };
   get_instance_overrides: {
     instanceNodeId: string | null;
@@ -2797,7 +3221,128 @@ type CommandParams = {
   set_selections: {
     nodeIds: string[];
   };
-
+  list_variables: Record<string, never>;
+  list_collections: Record<string, never>;
+  create_collection: { name: string };
+  get_node_variables: { nodeId: string };
+  rename_node: { nodeId: string; name: string };
+  get_node_paints: { nodeId: string };
+  set_node_paints: {
+    nodeId: string;
+    paints: Array<{
+      type:
+        | 'SOLID'
+        | 'GRADIENT_LINEAR'
+        | 'GRADIENT_RADIAL'
+        | 'GRADIENT_ANGULAR'
+        | 'GRADIENT_DIAMOND'
+        | 'IMAGE'
+        | 'VIDEO'
+        | 'VARIABLE_ALIAS';
+      visible?: boolean;
+      opacity?: number;
+      blendMode?: string;
+      boundVariables?: {
+        color?: {
+          type: string;
+          variableId: string;
+        };
+        [key: string]: unknown;
+      };
+      color?: { r: number; g: number; b: number; a?: number };
+      gradientStops?: Array<{ color: { r: number; g: number; b: number; a?: number }; position: number }>;
+      imageRef?: string;
+      // Allow additional properties as per Paint interface
+      [key: string]: unknown;
+    }>;
+    paintsType?: "fills" | "strokes";
+  };
+  create_variable: {
+    name: string;
+    resolvedType: "FLOAT" | "STRING" | "BOOLEAN" | "COLOR";
+    scopes: string[];
+    description?: string;
+  };
+  set_variable_value: {
+    variableId: string;
+    modeId?: string;
+    collectionId?: string;
+    valueType: "FLOAT" | "STRING" | "BOOLEAN" | "COLOR";
+    value?: any; // Value can be of any type depending on the variable type
+    variableReferenceId?: string; // Optional reference to another variable
+  };
+  create_local_instance: {
+    componentId: string;
+    parentId?: string;
+    x?: number;
+    y?: number;
+  };
+  create_component: {
+    nodeId: string;
+  };
+  create_component_from_scratch: {
+    name?: string;
+    x?: number;
+    y?: number;
+    width?: number;
+    height?: number;
+    parentId?: string;
+  };
+  create_component_set: {
+    componentIds: string[];
+    name?: string;
+  };
+  create_page: {
+    name?: string;
+  };
+  switch_page: {
+    pageId: string;
+  };
+  get_all_pages: Record<string, never>;
+  set_opacity: {
+    nodeId: string;
+    opacity: number;
+  };
+  set_effects: {
+    nodeId: string;
+    effects: Array<{
+      type: "DROP_SHADOW" | "INNER_SHADOW" | "LAYER_BLUR" | "BACKGROUND_BLUR";
+      visible?: boolean;
+      radius?: number;
+      color?: { r: number; g: number; b: number; a?: number };
+      offset?: { x: number; y: number };
+      spread?: number;
+      blendMode?: string;
+    }>;
+  };
+  create_style: {
+    name: string;
+    type: "FILL" | "TEXT" | "EFFECT";
+    paints?: Array<{
+      type: string;
+      color?: { r: number; g: number; b: number; a?: number };
+      visible?: boolean;
+      opacity?: number;
+    }>;
+    effects?: Array<{
+      type: string;
+      visible?: boolean;
+      radius?: number;
+      color?: { r: number; g: number; b: number; a?: number };
+      offset?: { x: number; y: number };
+      spread?: number;
+    }>;
+    fontSize?: number;
+    fontFamily?: string;
+    fontStyle?: string;
+    lineHeight?: number;
+    letterSpacing?: number;
+  };
+  reorder_child: {
+    parentId: string;
+    childId: string;
+    index: number;
+  };
 };
 
 
@@ -3029,6 +3574,352 @@ function sendCommandToFigma(
   });
 }
 
+// Create instance of a local component by ID, with optional parent
+server.tool(
+  "create_local_instance",
+  "Create an instance of a local (unpublished) component by its node ID, optionally inside a parent node",
+  {
+    componentId: z.string().describe("The node ID of the local component to instantiate"),
+    parentId: z.string().optional().describe("Parent node ID to append the instance into"),
+    x: z.number().optional().describe("X position").default(0),
+    y: z.number().optional().describe("Y position").default(0),
+  },
+  async ({ componentId, parentId, x, y }: any) => {
+    try {
+      const result = await sendCommandToFigma("create_local_instance", {
+        componentId, parentId, x, y,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error creating local instance: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Create Component from existing node
+server.tool(
+  "create_component",
+  "Convert an existing frame or group into a reusable component",
+  {
+    nodeId: z.string().describe("The ID of the node to convert into a component"),
+  },
+  async ({ nodeId }: any) => {
+    try {
+      const result = await sendCommandToFigma("create_component", { nodeId });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error creating component: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Create Component from scratch
+server.tool(
+  "create_component_from_scratch",
+  "Create a new empty component node from scratch",
+  {
+    name: z.string().optional().describe("Name for the component"),
+    x: z.number().optional().describe("X position"),
+    y: z.number().optional().describe("Y position"),
+    width: z.number().optional().describe("Width of the component"),
+    height: z.number().optional().describe("Height of the component"),
+    parentId: z.string().optional().describe("Parent node ID to append the component to"),
+  },
+  async ({ name, x, y, width, height, parentId }: any) => {
+    try {
+      const result = await sendCommandToFigma("create_component_from_scratch", {
+        name, x, y, width, height, parentId,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error creating component from scratch: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Create Component Set (variants)
+server.tool(
+  "create_component_set",
+  "Group variant components into a component set",
+  {
+    componentIds: z.preprocess(
+      (val) => (typeof val === "string" ? JSON.parse(val) : val),
+      z.array(z.string())
+    ).describe("Array of component node IDs to combine as variants"),
+    name: z.string().optional().describe("Name for the component set"),
+  },
+  async ({ componentIds, name }: any) => {
+    try {
+      const result = await sendCommandToFigma("create_component_set", {
+        componentIds, name,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error creating component set: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Create Page
+server.tool(
+  "create_page",
+  "Create a new page in the Figma document",
+  {
+    name: z.string().optional().describe("Name for the new page"),
+  },
+  async ({ name }: any) => {
+    try {
+      const result = await sendCommandToFigma("create_page", { name });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error creating page: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Switch Page
+server.tool(
+  "switch_page",
+  "Navigate to a specific page in the Figma document",
+  {
+    pageId: z.string().describe("The ID of the page to switch to"),
+  },
+  async ({ pageId }: any) => {
+    try {
+      const result = await sendCommandToFigma("switch_page", { pageId });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error switching page: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Get All Pages
+server.tool(
+  "get_all_pages",
+  "List all pages in the Figma document with their IDs and child counts",
+  {},
+  async () => {
+    try {
+      const result = await sendCommandToFigma("get_all_pages");
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error getting pages: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Set Opacity
+server.tool(
+  "set_opacity",
+  "Set the opacity of a node (0 to 1)",
+  {
+    nodeId: z.string().describe("The ID of the node"),
+    opacity: z.number().min(0).max(1).describe("Opacity value from 0 (transparent) to 1 (opaque)"),
+  },
+  async ({ nodeId, opacity }: any) => {
+    try {
+      const result = await sendCommandToFigma("set_opacity", { nodeId, opacity });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error setting opacity: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Set Effects
+server.tool(
+  "set_effects",
+  "Set effects (drop shadow, inner shadow, layer blur, background blur) on a node",
+  {
+    nodeId: z.string().describe("The ID of the node"),
+    effects: z.array(z.object({
+      type: z.enum(["DROP_SHADOW", "INNER_SHADOW", "LAYER_BLUR", "BACKGROUND_BLUR"]).describe("Effect type"),
+      visible: z.boolean().optional().describe("Whether the effect is visible"),
+      radius: z.number().optional().describe("Blur radius"),
+      color: z.object({
+        r: z.number(), g: z.number(), b: z.number(), a: z.number().optional(),
+      }).optional().describe("Effect color (for shadows)"),
+      offset: z.object({
+        x: z.number(), y: z.number(),
+      }).optional().describe("Shadow offset"),
+      spread: z.number().optional().describe("Shadow spread"),
+      blendMode: z.string().optional().describe("Blend mode"),
+    })).describe("Array of effects to apply"),
+  },
+  async ({ nodeId, effects }: any) => {
+    try {
+      const result = await sendCommandToFigma("set_effects", { nodeId, effects });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error setting effects: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Create Style
+server.tool(
+  "create_style",
+  "Create a named reusable style (fill/paint, text, or effect) in the document",
+  {
+    name: z.string().describe("Name for the style"),
+    type: z.enum(["FILL", "TEXT", "EFFECT"]).describe("Type of style to create"),
+    paints: z.array(z.object({
+      type: z.string(),
+      color: z.object({
+        r: z.number(), g: z.number(), b: z.number(), a: z.number().optional(),
+      }).optional(),
+      visible: z.boolean().optional(),
+      opacity: z.number().optional(),
+    })).optional().describe("Paint array for FILL styles"),
+    effects: z.array(z.object({
+      type: z.string(),
+      visible: z.boolean().optional(),
+      radius: z.number().optional(),
+      color: z.object({
+        r: z.number(), g: z.number(), b: z.number(), a: z.number().optional(),
+      }).optional(),
+      offset: z.object({
+        x: z.number(), y: z.number(),
+      }).optional(),
+      spread: z.number().optional(),
+    })).optional().describe("Effects array for EFFECT styles"),
+    fontSize: z.number().optional().describe("Font size for TEXT styles"),
+    fontFamily: z.string().optional().describe("Font family for TEXT styles"),
+    fontStyle: z.string().optional().describe("Font style for TEXT styles (e.g. Regular, Bold)"),
+    lineHeight: z.number().optional().describe("Line height for TEXT styles"),
+    letterSpacing: z.number().optional().describe("Letter spacing for TEXT styles"),
+  },
+  async ({ name, type, paints, effects, fontSize, fontFamily, fontStyle, lineHeight, letterSpacing }: any) => {
+    try {
+      const result = await sendCommandToFigma("create_style", {
+        name, type, paints, effects, fontSize, fontFamily, fontStyle, lineHeight, letterSpacing,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error creating style: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Reorder Child - move a child node to a specific index within its parent
+server.tool(
+  "reorder_child",
+  "Reorder a child node within its parent by moving it to a specific index (0-based). Use this to change sibling order.",
+  {
+    parentId: z.string().describe("The ID of the parent node"),
+    childId: z.string().describe("The ID of the child node to reorder"),
+    index: z.number().describe("The target index (0-based) within the parent's children"),
+  },
+  async ({ parentId, childId, index }: any) => {
+    try {
+      const result = await sendCommandToFigma("reorder_child", { parentId, childId, index });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error reordering child: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
 // Update the join_channel tool
 server.tool(
   "join_channel",
@@ -3079,9 +3970,41 @@ server.tool(
 
 // Start the server
 async function main() {
+  // Handle --relay-only mode: just start the relay and keep running
+  if (relayOnlyMode) {
+    logger.info('Starting in relay-only mode...');
+    try {
+      await startRelayServer(relayPort);
+      logger.info(`Relay server started on port ${relayPort}. Press Ctrl+C to stop.`);
+      // Keep the process alive
+      await new Promise(() => {}); // Never resolves
+    } catch (error) {
+      logger.error(`Failed to start relay server: ${error instanceof Error ? error.message : String(error)}`);
+      process.exit(1);
+    }
+    return;
+  }
+
+  // Normal mode: Start embedded relay server, then MCP server
+  try {
+    await startRelayServer(relayPort);
+    logger.info(`Embedded relay server started on port ${relayPort}`);
+  } catch (error) {
+    // If port is already in use, assume external relay is running
+    if (error instanceof Error && error.message.includes('already in use')) {
+      logger.info(`Relay server already running on port ${relayPort}, using existing server`);
+    } else {
+      logger.warn(`Could not start embedded relay: ${error instanceof Error ? error.message : String(error)}`);
+      logger.warn('Continuing without embedded relay - ensure external relay is running');
+    }
+  }
+
+  // Give the relay server a moment to fully initialize
+  await new Promise(resolve => setTimeout(resolve, 100));
+
   try {
     // Try to connect to Figma socket server
-    connectToFigma();
+    connectToFigma(relayPort);
   } catch (error) {
     logger.warn(`Could not connect to Figma initially: ${error instanceof Error ? error.message : String(error)}`);
     logger.warn('Will try to connect when the first command is sent');

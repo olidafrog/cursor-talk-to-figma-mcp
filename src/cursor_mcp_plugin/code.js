@@ -51,7 +51,7 @@ function sendProgressUpdate(
 }
 
 // Show UI
-figma.showUI(__html__, { width: 350, height: 600 });
+figma.showUI(__html__, { width: 350, height: 350 });
 
 // Plugin commands from UI
 figma.ui.onmessage = async (msg) => {
@@ -233,6 +233,46 @@ async function handleCommand(command, params) {
       return await setFocus(params);
     case "set_selections":
       return await setSelections(params);
+    case "list_variables":
+      return await listVariables();
+    case "get_node_variables":
+      return await getNodeVariables(params);
+    case "create_variable":
+      return await createVariable(params);
+    case "set_variable_value":
+      return await setVariableValue(params);
+    case "list_collections":
+      return await listCollections();
+    case "create_collection":
+      return await createCollection(params);
+    case "rename_node":
+      return await renameNode(params);
+    case "set_node_paints":
+      return await setNodePaints(params);
+    case "get_node_paints":
+      return await getNodePaints(params);
+    case "create_component":
+      return await createComponentFromNode(params);
+    case "create_component_from_scratch":
+      return await createComponentFromScratch(params);
+    case "create_component_set":
+      return await createComponentSet(params);
+    case "create_local_instance":
+      return await createLocalInstance(params);
+    case "create_page":
+      return await createPage(params);
+    case "switch_page":
+      return await switchPage(params);
+    case "get_all_pages":
+      return await getAllPages();
+    case "set_opacity":
+      return await setOpacity(params);
+    case "set_effects":
+      return await setEffects(params);
+    case "create_style":
+      return await createStyle(params);
+    case "reorder_child":
+      return await reorderChild(params);
     default:
       throw new Error(`Unknown command: ${command}`);
   }
@@ -1164,20 +1204,44 @@ async function getLocalComponents() {
 // }
 
 async function createComponentInstance(params) {
-  const { componentKey, x = 0, y = 0 } = params || {};
+  const { componentKey, componentId, x = 0, y = 0, parentId } = params || {};
 
-  if (!componentKey) {
-    throw new Error("Missing componentKey parameter");
+  if (!componentKey && !componentId) {
+    throw new Error("Missing componentKey or componentId parameter");
   }
 
   try {
-    const component = await figma.importComponentByKeyAsync(componentKey);
+    var component;
+    if (componentId) {
+      // Use local component by ID
+      var node = await figma.getNodeByIdAsync(componentId);
+      if (!node) {
+        throw new Error("Component not found with ID: " + componentId);
+      }
+      if (node.type !== "COMPONENT") {
+        throw new Error("Node is not a component: " + componentId + " (type: " + node.type + ")");
+      }
+      component = node;
+    } else {
+      // Use published component by key
+      component = await figma.importComponentByKeyAsync(componentKey);
+    }
+
     const instance = component.createInstance();
 
     instance.x = x;
     instance.y = y;
 
-    figma.currentPage.appendChild(instance);
+    if (parentId) {
+      const parent = await figma.getNodeByIdAsync(parentId);
+      if (parent && "appendChild" in parent) {
+        parent.appendChild(instance);
+      } else {
+        figma.currentPage.appendChild(instance);
+      }
+    } else {
+      figma.currentPage.appendChild(instance);
+    }
 
     return {
       id: instance.id,
@@ -1389,6 +1453,320 @@ async function setTextContent(params) {
   } catch (error) {
     throw new Error(`Error setting text content: ${error.message}`);
   }
+}
+
+// === Figma Variables Support ===
+
+// List all local variables in the document
+async function listVariables() {
+  if (!figma.variables || !figma.variables.getLocalVariablesAsync) {
+    throw new Error("Figma Variables API not available");
+  }
+  const variables = await figma.variables.getLocalVariablesAsync();
+  return variables.map(v => ({
+    id: v.id,
+    name: v.name,
+    key: v.key,
+    resolvedType: v.resolvedType,
+    valuesByMode: v.valuesByMode,
+    scopes: v.scopes,
+    description: v.description
+  }));
+}
+
+// Get variable bindings for a node
+async function getNodeVariables(params) {
+  const { nodeId } = params || {};
+  if (!nodeId) throw new Error("Missing nodeId parameter");
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error(`Node not found: ${nodeId}`);
+  if (!node.boundVariables) return { nodeId, boundVariables: null };
+  return { nodeId, boundVariables: node.boundVariables };
+}
+
+async function listCollections(params) { 
+  if (!figma.variables || !figma.variables.getLocalVariableCollectionsAsync) {
+    throw new Error("Figma Variables API not available");
+  }
+  const collections = await figma.variables.getLocalVariableCollectionsAsync();
+  return collections.map(c => ({
+    id: c.id,
+    name: c.name,
+    key: c.key,
+    description: c.description
+  }));
+}
+
+/**
+ * Creates a new variable collection in the Figma document.
+ * @param {Object} params
+ * @param {string} params.name - The name of the collection
+ * @returns {Promise<Object>} - The created collection object
+ */
+async function createCollection(params) {
+  if (!figma.variables || !figma.variables.createVariableCollection) {
+    throw new Error("Figma Variables API not available");
+  }
+  const { name } = params || {};
+  if (!name) {
+    throw new Error("Missing required parameter: name");
+  }
+  const collection = figma.variables.createVariableCollection(name);
+  return {
+    id: collection.id,
+    name: collection.name,
+    key: collection.key,
+    defaultModeId: collection.defaultModeId,
+    modes: collection.modes
+  };
+}
+
+/**
+ * Renames a node in the Figma document.
+ * @param {Object} params
+ * @param {string} params.nodeId - The ID of the node to rename
+ * @param {string} params.name - The new name for the node
+ * @returns {Promise<Object>} - The renamed node info
+ */
+async function renameNode(params) {
+  const { nodeId, name } = params || {};
+  if (!nodeId || !name) {
+    throw new Error("Missing required parameters: nodeId, name");
+  }
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) {
+    throw new Error(`Node not found: ${nodeId}`);
+  }
+  node.name = name;
+  return {
+    id: node.id,
+    name: node.name,
+    type: node.type
+  };
+}
+
+/**
+ * Creates a new variable in the Figma document.
+ * @param {Object} params
+ * @param {string} params.name - The name of the variable
+ * @param {"FLOAT"|"STRING"|"BOOLEAN"|"COLOR"} params.resolvedType - The type of the variable
+ * @param {string} [params.description] - Optional description
+ * @param {string} collectionId - The Figma collection to contain the variable.
+ * @returns {Promise<Object>} - The created variable object
+ */
+async function createVariable(params) {
+  if (!figma.variables || !figma.variables.createVariable) {
+    throw new Error("Figma Variables API not available");
+  }
+  const { name, resolvedType, description, collectionId } = params || {};
+  if (!name || !resolvedType) {
+    throw new Error("Missing required parameters: name, resolvedType");
+  }
+  const collection = await figma.variables.getVariableCollectionByIdAsync(collectionId);
+  if (!collection) {
+    throw new Error(`Variable collection not found: ${collectionId}`);
+  }
+  const variable = figma.variables.createVariable(name, collection, resolvedType);
+  if (description) variable.description = description;
+  return {
+    id: variable.id,
+    name: variable.name,
+    key: variable.key,
+    resolvedType: variable.resolvedType,
+    valuesByMode: variable.valuesByMode,
+    scopes: variable.scopes,
+    description: variable.description
+  };
+}
+
+/**
+ * Sets a value for a Figma variable in a specific mode.
+ * Supports setting direct values (FLOAT, STRING, BOOLEAN, COLOR) or referencing another variable (alias).
+ * 
+ * @async
+ * @function setVariableValue
+ * @param {Object} params - Parameters for setting the variable value.
+ * @param {string} params.variableId - The ID of the variable to update.
+ * @param {string} params.modeId - The ID of the mode to set the value for.
+ * @param {*} params.value - The value to set. For COLOR, should be an object { r, g, b, a }.
+ * @param {"FLOAT"|"STRING"|"BOOLEAN"|"COLOR"} params.valueType - The type of the value to set.
+ * @param {string} [params.variableReferenceId] - Optional. If provided, sets the value as an alias to another variable.
+ * @returns {Promise<Object>} Result object with success status and details of the operation.
+ * @throws {Error} If required parameters are missing, or if the Figma Variables API is not available, or if the value is invalid.
+  */
+
+async function setVariableValue(params) {
+  const { variableId, modeId, value, valueType, variableReferenceId } = params || {};
+  if (!variableId) {
+    throw new Error("Missing variableId or parameter");
+  }
+  if (!figma.variables || !figma.variables.getVariableByIdAsync) {
+    throw new Error("Figma Variables API not available");
+  }
+  const variable = await figma.variables.getVariableByIdAsync(variableId);
+  if (!variable) throw new Error(`Variable not found: ${variableId}`);
+
+  let mode = modeId || Object.keys(variable.valuesByMode)[0];
+
+  // If variableReferenceId is provided, set value as a reference to another variable
+  if (variableReferenceId) {
+    const refVariable = await figma.variables.getVariableByIdAsync(variableReferenceId);
+    if (!refVariable) throw new Error(`Reference variable not found: ${variableReferenceId}`);
+    variable.setValueForMode(mode, { type: "VARIABLE_ALIAS", id: variableReferenceId });
+    return { success: true, variableId, mode, value: { type: "VARIABLE_ALIAS", id: variableReferenceId } };
+  }
+
+  // Otherwise, set the value directly based on valueType
+  if (valueType === "COLOR") {
+    // value should be { r, g, b, a }
+    if (!value || typeof value !== "object" || value.r === undefined || value.g === undefined || value.b === undefined) {
+      throw new Error("Invalid color value");
+    }
+    variable.setValueForMode(mode, {
+      r: Number(value.r),
+      g: Number(value.g),
+      b: Number(value.b),
+      a: Number(value.a) || 1
+    });
+  } else if (valueType === "FLOAT") {
+    variable.setValueForMode(mode, Number(value));
+  } else if (valueType === "STRING") {
+    variable.setValueForMode(mode, String(value));
+  } else if (valueType === "BOOLEAN") {
+    variable.setValueForMode(mode, Boolean(value));
+  } else {
+    throw new Error("Unsupported valueType");
+  }
+  return { success: true, variableId, mode, value };
+}
+
+// --- setNodePaints: Set fills or strokes on a node ---
+async function setNodePaints(params) {
+  const { nodeId, paints, paintsType = "fills" } = params || {};
+  if (!nodeId) throw new Error("Missing nodeId parameter");
+  if (!Array.isArray(paints)) throw new Error("'paints' must be an array");
+  if (paintsType !== "fills" && paintsType !== "strokes") throw new Error("paintsType must be 'fills' or 'strokes'");
+
+  // Get target node
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error(`Node not found with ID: ${nodeId}`);
+  if (!(paintsType in node)) throw new Error(`Node does not support ${paintsType}: ${nodeId}`);
+
+  // Validate and format each paint object asynchronously
+  const validatedPaints = await Promise.all(paints.map(async paint => {
+    // Validate paint type
+    if (!paint.type || !['SOLID', 'GRADIENT_LINEAR', 'GRADIENT_RADIAL', 
+        'GRADIENT_ANGULAR', 'GRADIENT_DIAMOND', 'IMAGE', 'VIDEO'].includes(paint.type)) {
+      throw new Error(`Invalid paint type: ${paint.type}`);
+    }
+
+    // Format based on paint type
+    let formattedPaint;
+    switch (paint.type) {
+      case 'SOLID':
+        if (!paint.color && paint.boundVariables && paint.boundVariables.color) {
+          // get variable color and return as formatted paint
+          const variableColor = await figma.variables.getVariableByIdAsync(paint.boundVariables.color.variableId);
+          
+          //get value from variable for default mode 
+          const variableColorValue = Object.values(variableColor.valuesByMode)[0];
+          formattedPaint = {
+            type: 'SOLID',
+            color: {
+              r: Number(variableColorValue.r || 0),
+              g: Number(variableColorValue.g || 0),
+              b: Number(variableColorValue.b || 0)
+            },
+            opacity: Number(paint.opacity || 1)
+          };
+        } else {
+          formattedPaint = {
+            type: 'SOLID',
+            color: {
+              r: Number(paint.color.r || 0),
+              g: Number(paint.color.g || 0),
+              b: Number(paint.color.b || 0)
+            },
+            opacity: Number(paint.opacity || 1)
+          };
+        }
+        break;
+
+      case 'GRADIENT_LINEAR':
+      case 'GRADIENT_RADIAL':
+      case 'GRADIENT_ANGULAR':
+      case 'GRADIENT_DIAMOND':
+        if (!paint.gradientStops || !Array.isArray(paint.gradientStops)) {
+          throw new Error('Gradient requires gradientStops array');
+        }
+        formattedPaint = {
+          type: paint.type,
+          gradientStops: paint.gradientStops.map(stop => ({
+            position: Number(stop.position || 0),
+            color: {
+              r: Number(stop.color.r || 0),
+              g: Number(stop.color.g || 0),
+              b: Number(stop.color.b || 0),
+              a: Number(stop.color.a || 1)
+            }
+          })),
+          gradientTransform: paint.gradientTransform || [[1,0,0], [0,1,0]]
+        };
+        break;
+
+      case 'IMAGE':
+        formattedPaint = {
+          type: 'IMAGE',
+          scaleMode: paint.scaleMode || 'FILL',
+          imageHash: paint.imageHash,
+          opacity: Number(paint.opacity || 1)
+        };
+        break;
+
+      default:
+        throw new Error(`Unsupported paint type: ${paint.type}`);
+    }
+
+    if (paint.boundVariables && paint.boundVariables.color) {
+      const variableColor = await figma.variables.getVariableByIdAsync(paint.boundVariables.color.variableId);
+      try {
+        return figma.variables.setBoundVariableForPaint(formattedPaint, 'color', variableColor);
+      } catch (error) {
+        console.error(`Error setting bound variable for paint: ${error.message}`);
+        throw new Error(`Error setting ${formattedPaint}: ${error.message}`);
+      }
+    } else {
+      return formattedPaint;
+    }
+  }));
+
+  // Apply validated paints
+  try {
+    node[paintsType] = validatedPaints;
+  } catch (error) {
+    throw new Error(`Error setting ${paintsType}: ${error.message}, ${JSON.stringify(validatedPaints, null, 2)}`);
+  }
+
+  return {
+    id: node.id,
+    name: node.name,
+    [paintsType]: node[paintsType]
+  };
+}
+
+// --- getNodePaints: Get fills or strokes from a node ---
+async function getNodePaints(params) {
+  const { nodeId, paintsType = "fills" } = params || {};
+  if (!nodeId) throw new Error("Missing nodeId parameter");
+  if (paintsType !== "fills" && paintsType !== "strokes") throw new Error("paintsType must be 'fills' or 'strokes'");
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error(`Node not found with ID: ${nodeId}`);
+  if (!(paintsType in node)) throw new Error(`Node does not support ${paintsType}: ${nodeId}`);
+  return {
+    id: node.id,
+    name: node.name,
+    [paintsType]: node[paintsType],
+  };
 }
 
 // Initialize settings on load
@@ -4024,5 +4402,303 @@ async function setSelections(params) {
     selectedNodes: selectedNodes,
     notFoundIds: notFoundIds,
     message: `Selected ${nodes.length} nodes${notFoundIds.length > 0 ? ` (${notFoundIds.length} not found)` : ''}`
+  };
+}
+
+// Convert an existing frame/group into a component
+async function createComponentFromNode(params) {
+  const { nodeId } = params || {};
+  if (!nodeId) {
+    throw new Error("Missing nodeId parameter");
+  }
+
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) {
+    throw new Error(`Node not found: ${nodeId}`);
+  }
+
+  const component = figma.createComponentFromNode(node);
+  return {
+    id: component.id,
+    name: component.name,
+    type: component.type,
+  };
+}
+
+// Create a new empty component node from scratch
+async function createComponentFromScratch(params) {
+  const component = figma.createComponent();
+  component.name = params.name || "Component";
+  component.x = params.x || 0;
+  component.y = params.y || 0;
+  component.resize(params.width || 100, params.height || 100);
+
+  if (params.parentId) {
+    const parent = await figma.getNodeByIdAsync(params.parentId);
+    if (parent && "appendChild" in parent) {
+      parent.appendChild(component);
+    }
+  } else {
+    figma.currentPage.appendChild(component);
+  }
+
+  return {
+    id: component.id,
+    name: component.name,
+    type: component.type,
+  };
+}
+
+// Group variant components into a component set
+async function createComponentSet(params) {
+  const { componentIds, name } = params || {};
+  if (!componentIds || !Array.isArray(componentIds) || componentIds.length === 0) {
+    throw new Error("Missing or invalid componentIds parameter");
+  }
+
+  const components = [];
+  for (const id of componentIds) {
+    const node = await figma.getNodeByIdAsync(id);
+    if (node && node.type === "COMPONENT") {
+      components.push(node);
+    }
+  }
+
+  if (components.length < 2) {
+    throw new Error("At least 2 valid component nodes are required to create a component set");
+  }
+
+  const set = figma.combineAsVariants(components, figma.currentPage);
+  if (name) {
+    set.name = name;
+  }
+
+  return {
+    id: set.id,
+    name: set.name,
+    type: set.type,
+    childCount: set.children.length,
+  };
+}
+
+// Create a new page in the document
+async function createPage(params) {
+  const page = figma.createPage();
+  page.name = (params && params.name) || "New Page";
+  return {
+    id: page.id,
+    name: page.name,
+  };
+}
+
+// Navigate to a specific page
+async function switchPage(params) {
+  const { pageId } = params || {};
+  if (!pageId) {
+    throw new Error("Missing pageId parameter");
+  }
+
+  const page = await figma.getNodeByIdAsync(pageId);
+  if (!page || page.type !== "PAGE") {
+    throw new Error(`Page not found: ${pageId}`);
+  }
+
+  await figma.setCurrentPageAsync(page);
+  return {
+    id: page.id,
+    name: page.name,
+  };
+}
+
+// List all pages in the document
+async function getAllPages() {
+  return {
+    pages: figma.root.children.map(function (p) {
+      return {
+        id: p.id,
+        name: p.name,
+        childCount: p.children.length,
+      };
+    }),
+    currentPageId: figma.currentPage.id,
+  };
+}
+
+// Set node opacity
+async function setOpacity(params) {
+  const { nodeId, opacity } = params || {};
+  if (!nodeId) {
+    throw new Error("Missing nodeId parameter");
+  }
+  if (opacity === undefined || opacity === null) {
+    throw new Error("Missing opacity parameter");
+  }
+
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) {
+    throw new Error(`Node not found: ${nodeId}`);
+  }
+
+  if (!("opacity" in node)) {
+    throw new Error(`Node type ${node.type} does not support opacity`);
+  }
+
+  node.opacity = opacity;
+  return {
+    id: node.id,
+    name: node.name,
+    opacity: node.opacity,
+  };
+}
+
+// Set effects on a node
+async function setEffects(params) {
+  const { nodeId, effects } = params || {};
+  if (!nodeId) {
+    throw new Error("Missing nodeId parameter");
+  }
+  if (!effects || !Array.isArray(effects)) {
+    throw new Error("Missing or invalid effects parameter");
+  }
+
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) {
+    throw new Error(`Node not found: ${nodeId}`);
+  }
+
+  if (!("effects" in node)) {
+    throw new Error(`Node type ${node.type} does not support effects`);
+  }
+
+  node.effects = effects;
+  return {
+    id: node.id,
+    name: node.name,
+    effectCount: node.effects.length,
+  };
+}
+
+// Create a named reusable style
+async function createStyle(params) {
+  const { name, type } = params || {};
+  if (!name) {
+    throw new Error("Missing name parameter");
+  }
+  if (!type) {
+    throw new Error("Missing type parameter");
+  }
+
+  var style;
+  switch (type) {
+    case "FILL": {
+      style = figma.createPaintStyle();
+      style.name = name;
+      if (params.paints) {
+        style.paints = params.paints;
+      }
+      break;
+    }
+    case "TEXT": {
+      style = figma.createTextStyle();
+      style.name = name;
+      if (params.fontSize !== undefined) {
+        style.fontSize = params.fontSize;
+      }
+      if (params.fontFamily) {
+        var fontStyle = params.fontStyle || "Regular";
+        await figma.loadFontAsync({ family: params.fontFamily, style: fontStyle });
+        style.fontName = { family: params.fontFamily, style: fontStyle };
+      }
+      if (params.lineHeight !== undefined) {
+        style.lineHeight = { value: params.lineHeight, unit: "PIXELS" };
+      }
+      if (params.letterSpacing !== undefined) {
+        style.letterSpacing = { value: params.letterSpacing, unit: "PIXELS" };
+      }
+      break;
+    }
+    case "EFFECT": {
+      style = figma.createEffectStyle();
+      style.name = name;
+      if (params.effects) {
+        style.effects = params.effects;
+      }
+      break;
+    }
+    default:
+      throw new Error(`Invalid style type: ${type}. Must be FILL, TEXT, or EFFECT.`);
+  }
+
+  return {
+    id: style.id,
+    name: style.name,
+    type: type,
+  };
+}
+
+// Create an instance of a local component by ID, with optional parent
+async function createLocalInstance(params) {
+  const { componentId, parentId, x = 0, y = 0 } = params || {};
+
+  if (!componentId) {
+    throw new Error("Missing componentId parameter");
+  }
+
+  var node = await figma.getNodeByIdAsync(componentId);
+  if (!node) {
+    throw new Error("Component not found with ID: " + componentId);
+  }
+  if (node.type !== "COMPONENT") {
+    throw new Error("Node is not a component: " + componentId + " (type: " + node.type + ")");
+  }
+
+  var instance = node.createInstance();
+  instance.x = x;
+  instance.y = y;
+
+  if (parentId) {
+    var parent = await figma.getNodeByIdAsync(parentId);
+    if (parent && "appendChild" in parent) {
+      parent.appendChild(instance);
+    } else {
+      figma.currentPage.appendChild(instance);
+    }
+  } else {
+    figma.currentPage.appendChild(instance);
+  }
+
+  return {
+    id: instance.id,
+    name: instance.name,
+    x: instance.x,
+    y: instance.y,
+    width: instance.width,
+    height: instance.height,
+  };
+}
+
+async function reorderChild(params) {
+  const { parentId, childId, index } = params || {};
+  if (!parentId) throw new Error("Missing parentId parameter");
+  if (!childId) throw new Error("Missing childId parameter");
+  if (index === undefined) throw new Error("Missing index parameter");
+
+  var parent = await figma.getNodeByIdAsync(parentId);
+  if (!parent) throw new Error("Parent node not found: " + parentId);
+  if (!("children" in parent)) throw new Error("Parent node does not support children");
+
+  var child = await figma.getNodeByIdAsync(childId);
+  if (!child) throw new Error("Child node not found: " + childId);
+
+  // insertChild moves the child to the specified index within the parent
+  parent.insertChild(index, child);
+
+  return {
+    id: child.id,
+    name: child.name,
+    newIndex: index,
+    parentId: parent.id,
+    parentName: parent.name,
+    childCount: parent.children.length,
   };
 }

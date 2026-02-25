@@ -19,5 +19,7 @@
       "ws://localhost:3055"
     ]
   },
-  "documentAccess": "dynamic-page"
+  "documentAccess": "dynamic-page",
+  "enableProposedApi": true,
+  "enablePrivatePluginApi": true
 }
